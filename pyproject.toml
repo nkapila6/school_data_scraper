@@ -1,0 +1,19 @@
+[project]
+name = "school-data-scraper"
+version = "0.1.0"
+description = "Scrape school tuition and transport fees from KHDA (Dubai) and SPEA (Sharjah)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pdfplumber>=0.10.0",
+]
+
+[project.scripts]
+scraper = "scraper.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scraper"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
