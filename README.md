@@ -1,6 +1,9 @@
 # school-data-scraper
 
+<img src="./vhs.gif"/>
+
 Scrapes school tuition and transport fees from:
+
 - **KHDA** — Dubai (230 schools, all curricula)
 - **SPEA** — Sharjah (96 schools, all curricula)
 
