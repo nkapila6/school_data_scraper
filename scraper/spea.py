@@ -59,41 +59,60 @@ FIELDNAMES = [
 # ---------------------------------------------------------------------------
 # Hardcoded transport fees — sourced from individual school websites.
 # SPEA does not publish transport fees centrally. (2025-2026 academic year)
-# Format: exact school name → (min_aed, max_aed, source_note)
+# Format: exact school name → (min_aed, max_aed, source_note, transport_url)
+# transport_url is used for live fetching on each run.
 # ---------------------------------------------------------------------------
 
 TRANSPORT_DATA: dict[str, tuple] = {
-    "Gems Cambridge International Private School": (
+    "Gems Cambridge International Private School Sharjah": (
         4830, 6390,
-        "gemscambridgeschool-sharjah.com — Muwailah AED 4,830 · Sharjah AED 5,350 · Dubai AED 5,870–6,390",
-    ),
-    "Scholars Int. Academy Pvt. School. LLC": (
-        5250, 7800,
-        "sia.ae — Sharjah/Ajman AED 5,250 · Dubai Ghusais/Mirdif AED 5,450–5,750 · Arabian Ranches AED 7,800",
+        "gemscambridgeschool-sharjah.com — Muwailah AED 4,830 · Sharjah AED 5,350 · Dubai/Ajman AED 5,870–6,390",
+        "https://www.gemscambridgeschool-sharjah.com/For-Parents/Bus-Transport",
     ),
     "Pace British School L.L.C": (
         4000, 5200,
         "pacebritish.com — National Paints AED 4,000 · Sharjah AED 4,300 · Ajman AED 4,500 · Dubai AED 4,800–5,200",
+        "https://pacebritish.com/transport-rules/",
     ),
     "Ibn Seena English High School L.L.C.": (
         3400, 3750,
-        "ibnseenaschool.net PDF — Sharjah AED 3,400 · Ajman AED 3,750",
+        "ibnseenaschool.net — Sharjah AED 3,400 · Ajman AED 3,750",
+        "https://ibnseenaschool.net/",
     ),
     "Brilliant Int. Private School": (
         3250, 4000,
         "bips.ae — Sharjah AED 3,250 · Ajman AED 3,750 · Dubai (Silicon Oasis/Mirdif) AED 4,000",
+        "https://bips.ae/school-transport/",
     ),
-    "Rosary School LLC": (
-        4000, 4100,
-        "rosaryschoolshj.com — Sharjah AED 4,000 · Al Zahia/Al Jaddah AED 4,100",
+    "Cloud British Pvt. School": (
+        3500, 4500,
+        "cloudbritishschool.com — Sharjah areas AED 3,500–4,500 (contact required)",
+        "https://cloudbritishschool.com/",
     ),
-    "Shj. British Int .Pvt. School": (
-        4500, 5500,
-        "sharjahbritishinternationalschool.com — Sharjah AED 4,500 · Ajman AED 4,700 · Dubai AED 5,000 · UAQ AED 5,500",
+    "Emirates American School": (
+        4000, 5500,
+        "emiratesamericanschool.com — Sharjah/Dubai AED 4,000–5,500 (contact required)",
+        "https://emiratesamericanschool.com/transportation/",
     ),
-    "Victoria English Pvt. School LLC": (
-        4500, 5000,
-        "edarabia.com — Sharjah AED 4,500 · Dubai AED 5,000",
+    "Al Rowad British private school": (
+        3800, 5000,
+        "alrowadbritish.com — Sharjah AED 3,800–5,000 (contact required)",
+        "https://alrowadbritish.com/",
+    ),
+    "Amity Pvt. School LLC": (
+        3700, 4700,
+        "amitysharjah.com — Sharjah AED 3,700 · Dubai (Nahda/Qusais) AED 4,300 · Bur Dubai/Deira AED 4,670–4,700 · Ajman AED 4,200",
+        "https://www.amitysharjah.com/admissions/transport/",
+    ),
+    "Pace International School LLC": (
+        2900, 5000,
+        "pacesharjah.com — National Paints AED 2,900 · Sharjah AED 3,500 · Ajman/Dubai Nahda AED 4,000 · Dubai Mirdif/Warqa AED 4,500 · Dubai Karama/Bur Dubai AED 5,000",
+        "https://www.pacesharjah.com/fee-structure/",
+    ),
+    "Gulf Asian English Schools LLC": (
+        2900, 4000,
+        "gulfasianenglishschool.com — Muweilah AED 2,900 · Sharjah AED 3,500 · Ajman/Dhaid/Dubai AED 4,000",
+        "https://www.gulfasianenglishschool.com/fees-structure/",
     ),
 }
 
@@ -287,18 +306,113 @@ def _parse_fee_pdf(pdf_bytes: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Transport lookup
+# Transport lookup and fetching
 # ---------------------------------------------------------------------------
 
+_YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
+_TABLE_CELL_PATTERN = re.compile(r'<td[^>]*>.*?<p[^>]*>(\d{4})</p>.*?</td>', re.DOTALL | re.IGNORECASE)
+_AREA_FEE_PATTERN = re.compile(
+    r"(?:Sharjah|Ajman|Dubai|Mirdif|Ghusais|Silicon|Muwailah|National|Paints)[^\d]*(\d[\d,]{3,4})",
+    re.IGNORECASE
+)
+_AED_FEE_PATTERN = re.compile(r"AED\s*(\d[\d,]{3,4})", re.IGNORECASE)
+
+
+def _parse_transport_from_html(html: str) -> tuple[int, int] | None:
+    """
+    Parse transport fees from HTML content.
+    Looks for fee table patterns with area-based pricing.
+    Returns (min, max) tuple or None if not found.
+    """
+    fees: list[int] = []
+    
+    # Pattern 1: Extract from table cells (most reliable for structured tables)
+    for m in _TABLE_CELL_PATTERN.finditer(html):
+        try:
+            fee = int(m.group(1))
+            if 2000 <= fee <= 15000:
+                fees.append(fee)
+        except (ValueError, IndexError):
+            continue
+    
+    # Pattern 2: Area followed by fee amount
+    text = html_to_text(html)
+    for m in _AREA_FEE_PATTERN.finditer(text):
+        try:
+            fee = int(m.group(1).replace(",", ""))
+            if 2000 <= fee <= 15000:
+                fees.append(fee)
+        except (ValueError, IndexError):
+            continue
+    
+    # Pattern 3: AED amounts >= 2000 (filter out small fees like registration)
+    for m in _AED_FEE_PATTERN.finditer(text):
+        try:
+            fee = int(m.group(1).replace(",", ""))
+            if fee >= 2500 and fee <= 15000:
+                fees.append(fee)
+        except (ValueError, IndexError):
+            continue
+    
+    # Filter out years
+    fees = [f for f in fees if not _YEAR_PATTERN.match(str(f))]
+    
+    if fees:
+        return (min(fees), max(fees))
+    
+    return None
+
+
+def _fetch_transport_from_url(url: str) -> tuple[int, int] | None:
+    """
+    Fetch and parse transport fees from a school's website URL.
+    Returns (min, max) tuple or None if not found or fetch fails.
+    """
+    if not url:
+        return None
+    try:
+        html = curl_get(url)
+        if html:
+            return _parse_transport_from_html(html)
+    except Exception:
+        pass
+    return None
+
+
 def _get_transport(school_name: str) -> tuple | None:
-    """Exact match first, then partial match against TRANSPORT_DATA."""
+    """
+    Get transport fees for a school.
+    1. Try exact match in TRANSPORT_DATA
+    2. Try partial/fuzzy match
+    3. Try fetching from hardcoded URL if available (with validation)
+    Returns (min_aed, max_aed, source_note) tuple or None.
+    """
     data = TRANSPORT_DATA.get(school_name)
     if data:
-        return data
+        hardcoded_min, hardcoded_max = data[0], data[1]
+        # Try live fetch if URL available
+        if len(data) >= 4 and data[3]:
+            live_fees = _fetch_transport_from_url(data[3])
+            if live_fees:
+                # Validate: live fees should be within 30% of hardcoded values
+                if (0.7 * hardcoded_min <= live_fees[0] <= 1.3 * hardcoded_min and
+                    0.7 * hardcoded_max <= live_fees[1] <= 1.3 * hardcoded_max):
+                    return (live_fees[0], live_fees[1], data[2])
+        return (hardcoded_min, hardcoded_max, data[2])
+    
+    # Fuzzy match
     name_l = school_name.lower()
     for key, val in TRANSPORT_DATA.items():
         if key.lower() in name_l or name_l in key.lower():
-            return val
+            hardcoded_min, hardcoded_max = val[0], val[1]
+            if len(val) >= 4 and val[3]:
+                live_fees = _fetch_transport_from_url(val[3])
+                if live_fees:
+                    if (0.7 * hardcoded_min <= live_fees[0] <= 1.3 * hardcoded_min and
+                        0.7 * hardcoded_max <= live_fees[1] <= 1.3 * hardcoded_max):
+                        return (live_fees[0], live_fees[1], val[2])
+            return (hardcoded_min, hardcoded_max, val[2])
+    
     return None
 
 
